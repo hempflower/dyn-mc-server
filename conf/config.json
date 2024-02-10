@@ -1,0 +1,31 @@
+{
+    "dns": {
+        "rootDomain": "mc-srv.example.com",
+        "ttl": 10
+    },
+    "dispatch": {
+        "ip": "127.0.0.1",
+        "startPort": 21000,
+        "endPort": 22000
+    },
+    "servers": [
+        {
+            "name": "redstone",
+            "subDomain": "redstone",
+            "port": 25565,
+            "vm": {
+                "type": "aliyun",
+                "options": {
+                    "endpoint": "ecs-cn-hangzhou.aliyuncs.com",
+                    "accessKeyId": "LTAXXXXXXXXXXXXXXXXXXXX",
+                    "accessKeySecret": "TCGASSSSS",
+                    "instanceId": "i-xxxxxxxxxx"
+                }
+            }
+        }
+    ],
+    "messages":{
+        "motd": "尚未开服，连接服务器即可自动开服",
+        "kick": "正在启动服务器，可能时间较长，大约需要 30s 左右"
+    }
+}
