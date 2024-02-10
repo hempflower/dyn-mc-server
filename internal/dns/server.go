@@ -35,6 +35,9 @@ func (s *DnsServer) dnsHandler(w dns.ResponseWriter, r *dns.Msg) {
 	m.SetReply(r)
 	m.Compress = false
 
+	// 权威应答
+	m.Authoritative = true
+
 	// only handle SRV query
 	if len(r.Question) != 1 {
 		m.Rcode = dns.RcodeNameError
