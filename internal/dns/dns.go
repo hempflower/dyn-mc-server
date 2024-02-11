@@ -110,6 +110,13 @@ func (s *DnsServer) dnsHandler(w dns.ResponseWriter, r *dns.Msg) {
 			})
 			log.Println(m.Answer)
 			log.Printf("A record for %s: %s\n", recordName, ip)
+
+			// if ip is 127.0.0.1 print a warning
+			if ip == "127.0.0.1" {
+				log.Printf("Warning: A record for %s is "+ip+"\n", recordName)
+
+				log.Println(s.aRecords)
+			}
 		}
 	} else {
 		m.Rcode = dns.RcodeNameError

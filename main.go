@@ -16,6 +16,8 @@ func main() {
 	viper.SetConfigType("json")
 	viper.ReadInConfig()
 
+	log.Println("Starting dispatch worker")
+
 	options := &dispatch.DispatchWorkerOptions{
 		DnsTtl:     viper.GetInt("dns.ttl"),
 		RootDomain: viper.GetString("dns.rootDomain"),

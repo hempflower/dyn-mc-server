@@ -1,7 +1,7 @@
 package dispatch
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -59,6 +59,88 @@ func (w *DispatchWorker) GetMcServerDomain(name string) string {
 	return fmt.Sprintf("%s.%s", name, w.options.RootDomain)
 }
 
+func (w *DispatchWorker) StartServer(name string) error {
+	info := w.serverMap[name]
+	if info == nil {
+		return errors.New("server not found")
+	}
+
+	status, err := info.VM.GetStatus()
+	if err != nil {
+		log.Printf("Failed to get status of server %s: %s", info.Name, err)
+		return err
+	}
+
+	if status.Status == vm.VM_STATUS_STOPPED {
+		err := info.VM.Start()
+		if err != nil {
+			log.Printf("Failed to start server %s: %s", info.Name, err)
+			return err
+		}
+		startTime := time.Now()
+		for {
+			// wait for server to start
+			status1, err := info.VM.GetStatus()
+			if err != nil {
+				log.Printf("Failed to get status of server %s: %s", info.Name, err)
+				return err
+			}
+
+			if status1.Status == vm.VM_STATUS_RUNNING {
+				break
+			}
+			log.Println("Waiting for server to start")
+			if time.Since(startTime) > 1*time.Minute {
+				return errors.New("server failed to start")
+			}
+		}
+
+		log.Println("Server started")
+	}
+
+	// 更新 dns
+	w.dnsServer.AddServiceRecord(
+		GetMinecraftSrvRecord(info.SubDomain),
+		fmt.Sprintf("%s:%d", w.GetMcServerDomain(info.SubDomain), info.Port),
+	)
+	w.dnsServer.AddARecord(info.SubDomain, status.Ip)
+
+	info.lastActivity = time.Now()
+
+	return nil
+}
+
+func (w *DispatchWorker) StopServer(name string) error {
+	info := w.serverMap[name]
+	if info == nil {
+		return errors.New("server not found")
+	}
+
+	status, err := info.VM.GetStatus()
+	if err != nil {
+		log.Printf("Failed to get status of server %s: %s", info.Name, err)
+		return err
+	}
+
+	if status.Status == vm.VM_STATUS_RUNNING {
+		err := info.VM.Stop()
+		if err != nil {
+			log.Printf("Failed to stop server %s: %s", info.Name, err)
+			return err
+		}
+	}
+
+	// 更新 dns
+	// 切换到 fake mc server
+	w.dnsServer.AddServiceRecord(
+		GetMinecraftSrvRecord(info.SubDomain),
+		fmt.Sprintf("%s:%d", w.GetDispatchServer(), info.fakeMcServer.port),
+	)
+	w.dnsServer.RemoveARecord(info.SubDomain)
+
+	return nil
+}
+
 func (w *DispatchWorker) AddServer(info *MCServerInfo) {
 	info.lastActivity = time.Now()
 
@@ -85,72 +167,37 @@ func (w *DispatchWorker) AddServer(info *MCServerInfo) {
 
 	info.quit = make(chan struct{})
 
-	go func() {
-		lastLogin := time.Now()
-
-		info.fakeMcServer.OnLogin(func() {
-			// 每 10 s 处理一次登录
-			if time.Since(lastLogin) < 10*time.Second {
-				return
-			}
-			lastLogin = time.Now()
-
-			// 查询 vm 状态
-			status, err := info.VM.GetStatus()
-			if err != nil {
-				log.Printf("Failed to get status of server %s: %s", info.Name, err)
-				return
-			}
-
-			if status.Status == vm.VM_STATUS_STOPPED {
-				// 启动 vm
-				err := info.VM.Start()
-				if err != nil {
-					log.Printf("Failed to start server %s: %s", info.Name, err)
-					return
-				}
-				log.Println("Server started")
-
-				go func() {
-					for {
-						status, err := info.VM.GetStatus()
-						if err != nil {
-							log.Printf("Failed to get status of server %s: %s", info.Name, err)
-							return
-						}
-
-						if status.Status == vm.VM_STATUS_RUNNING {
-							// 更新 dns
-							w.dnsServer.AddServiceRecord(GetMinecraftSrvRecord(info.SubDomain),
-								fmt.Sprintf("%s:%d", info.Name,
-									info.Port))
-							w.dnsServer.AddARecord(w.GetMcServerDomain(info.Name),
-								status.Ip)
-							break
-						}
-						log.Println("Waiting for server to start")
-
-						time.Sleep(5 * time.Second)
-					}
-				}()
-			}
-
-		})
-
-		info.fakeMcServer.Start()
-		<-info.quit
-		info.fakeMcServer.Stop()
-	}()
-
 	// update dns
 	w.dnsServer.AddServiceRecord(GetMinecraftSrvRecord(info.SubDomain),
 		fmt.Sprintf("%s:%d", w.GetDispatchServer(), port))
 	w.dnsServer.RemoveARecord(info.Name)
 
 	w.serverMap[info.Name] = info
+
+	lastLogin := time.Now()
+
+	info.fakeMcServer.OnLogin(func() {
+		// 每 10 s 处理一次登录
+		if time.Since(lastLogin) < 10*time.Second {
+			return
+		}
+		lastLogin = time.Now()
+
+		go w.StartServer(info.Name)
+
+	})
+
+	go func() {
+		<-info.quit
+		info.fakeMcServer.Stop()
+	}()
+	go func() {
+		info.fakeMcServer.Start()
+	}()
 }
 
 func (w *DispatchWorker) checkServers() {
+	log.Println("Checking servers")
 	for name, info := range w.serverMap {
 		// 判断 vm 是否还在运行
 		status, err := info.VM.GetStatus()
@@ -160,42 +207,19 @@ func (w *DispatchWorker) checkServers() {
 		}
 
 		if status.Status == vm.VM_STATUS_RUNNING {
-			if time.Since(info.lastActivity) > 10*time.Minute {
+			if time.Since(info.lastActivity) > 5*time.Minute {
 				log.Printf("Server %s has been inactive for 10 minutes, stopping", name)
-				info.VM.Stop()
-
-				// 更新 dns , 切换到 fake mc server
-				w.dnsServer.AddServiceRecord(
-					GetMinecraftSrvRecord(info.SubDomain),
-					fmt.Sprintf("%s:%d", w.GetDispatchServer(), info.fakeMcServer.port),
-				)
+				w.StopServer(name)
 			}
-			// ping mc 服务器，检测在线人数
-			data, _, err := bot.PingAndListTimeout(fmt.Sprintf("%s:%d", status.Ip, info.Port), 5*time.Second)
+			// ping mc 服务器，更新最后活动时间
+			_, _, err := bot.PingAndListTimeout(fmt.Sprintf("%s:%d", status.Ip, info.Port), 5*time.Second)
 			if err != nil {
 				log.Printf("Failed to ping server %s: %s", name, err)
 				continue
 			}
 
-			var serverStatus struct {
-				Players struct {
-					Online int `json:"online"`
-				} `json:"players"`
-			}
-
-			err = json.Unmarshal(data, &serverStatus)
-			if err != nil {
-				log.Printf("Failed to parse server status: %s", err)
-				continue
-			}
-
-			if serverStatus.Players.Online == 0 {
-				continue
-			}
-
 			info.lastActivity = time.Now()
 		}
-
 	}
 }
 
@@ -221,13 +245,14 @@ func (w *DispatchWorker) RemoveServer(name string) {
 	info.VM.Stop()
 	// 删除 dns 记录
 	w.dnsServer.RemoveServiceRecord(GetMinecraftSrvRecord(info.SubDomain))
+	w.dnsServer.RemoveARecord(info.Name)
 	delete(w.serverMap, name)
 
 }
 
 func (w *DispatchWorker) Start() error {
+	log.Println("Starting dispatch worker")
 	go w.background()
-
 	// add A record for dispatch server
 	w.dnsServer.AddARecord(
 		"dispatch",
@@ -246,7 +271,6 @@ func (w *DispatchWorker) Stop() {
 	w.dnsServer.RemoveARecord(w.GetDispatchServer())
 
 	w.dnsServer.Stop()
-	close(w.quit)
 	// stop all servers
 	for _, info := range w.serverMap {
 		w.RemoveServer(info.Name)

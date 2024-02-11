@@ -9,11 +9,12 @@ BIN_NAME := dmcs
 build:
 	@mkdir -p $(BUILD_DIR)
 	@cp -n ./conf/config.json $(BUILD_DIR)/config.json
-	$(GO) build -o $(BUILD_DIR)/$(BIN_NAME) ./cmd/main.go
+	$(GO) build -o $(BUILD_DIR)/$(BIN_NAME) -v .
 
 # Clean target
 clean:
 	@rm -rf $(BUILD_DIR)
+	$(GO) clean
 
 run: build
 	@cd $(BUILD_DIR) && ./$(BIN_NAME)
